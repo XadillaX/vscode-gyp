@@ -1,2 +1,3 @@
-# vscode-gyp
-`gyp` support for VSCode.
+# VScode GYP
+
+GYP support for VSCode.
