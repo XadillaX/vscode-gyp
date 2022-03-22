@@ -2,11 +2,18 @@ import * as path from 'path';
 
 import Base from 'sdk-base';
 import {
+  Definition,
+  DefinitionProvider,
   DocumentSelector,
   DocumentSemanticTokensProvider,
   ExtensionContext,
+  Hover,
+  HoverProvider,
   languages,
+  Location,
+  LocationLink,
   OutputChannel,
+  Position,
   SemanticTokens,
   SemanticTokensBuilder,
   SemanticTokensLegend,
@@ -15,14 +22,14 @@ import {
 } from 'vscode';
 import * as Parser from 'web-tree-sitter';
 
-import { GYP_SECTION, GYP_TARGET_SECTION } from './constants';
+import CONSTANTS from './constants';
 
 const parserPromise = Parser.init();
 
 /**
  * GYP support: DocumentSemanticTokensProvider
  */
-class GYPSupport extends Base implements DocumentSemanticTokensProvider {
+class GYPSupport extends Base implements DefinitionProvider, DocumentSemanticTokensProvider, HoverProvider {
   /**
    * Decode the semantic tokens.
    * @param semanticTokens The semantic tokens to decode.
@@ -69,6 +76,26 @@ class GYPSupport extends Base implements DocumentSemanticTokensProvider {
     return ret;
   }
 
+  static tryGetKeyNameType(node: Parser.SyntaxNode): string | null {
+    const keyName = node.text.substr(1, node.text.length - 2);
+    for (const key in CONSTANTS) {
+      if (!CONSTANTS.hasOwnProperty(key)) continue;
+      const candidates = CONSTANTS[key];
+      if (!Array.isArray(candidates)) continue;
+      if (candidates.includes(keyName)) {
+        return key;
+      }
+    }
+
+    return null;
+  }
+
+  static tryColorKeyName(node: Parser.SyntaxNode): [string, string] | null {
+    const type = GYPSupport.tryGetKeyNameType(node);
+    if (!type) return null;
+    return GYPSupport.matchedKeysTokenTypesAndModifiersMap.get(type) as [ string, string ];
+  }
+
   /**
    * The token types that this provider can provide.
    */
@@ -99,15 +126,22 @@ class GYPSupport extends Base implements DocumentSemanticTokensProvider {
     return new SemanticTokensLegend(tokenTypesLegend, tokenModifiersLegend);
   })();
 
+  static matchedKeysTokenTypesAndModifiersMap: Map<string, [string, string]> = new Map([
+    [ 'GYP_SECTION', [ 'enum', 'defaultLibrary' ]],
+    [ 'GYP_TARGETS_SECTION', [ 'namespace', 'defaultLibrary' ]],
+    [ 'GYP_CONFIGURATIONS_SECTION', [ 'macro', 'defaultLibrary' ]],
+    [ 'GYP_ACTIONS_SECTION', [ 'operator', 'defaultLibrary' ]],
+    [ 'GYP_RULES_SECTION', [ 'property', 'defaultLibrary' ]],
+    [ 'GYP_COPIES_SECTION', [ 'operator', 'defaultLibrary' ]],
+  ]);
+
   /**
    * The document selector for this provider.
    */
   static documentSelector: DocumentSelector = [{
     pattern: '**/*.gyp',
-    language: 'python',
   }, {
     pattern: '**/*.gypi',
-    language: 'python',
   }];
 
   /**
@@ -121,9 +155,14 @@ class GYPSupport extends Base implements DocumentSemanticTokensProvider {
   #parser: Parser;
 
   /**
-   * The cached tree to be used in incremental parsing.
+   * The cached tree to be used.
    */
   #trees: WeakMap<TextDocument, Parser.Tree> = new WeakMap();
+
+  /**
+   * The cached targets to be used in target Goto.
+   */
+  #targets: WeakMap<TextDocument, Map<string, Location>> = new WeakMap();
 
   /**
    * The constructor.
@@ -155,7 +194,7 @@ class GYPSupport extends Base implements DocumentSemanticTokensProvider {
     return GYPSupport.channel;
   }
 
-  #tryKeyName(node: Parser.SyntaxNode, builder: SemanticTokensBuilder) {
+  #isBuiltInKey(node: Parser.SyntaxNode): boolean {
     // string with pair inside of dictionary:
     //
     // dictionary
@@ -169,39 +208,95 @@ class GYPSupport extends Base implements DocumentSemanticTokensProvider {
     //   ...
     //  }
     //
-    if (node.type !== 'string') return;
-    if (node?.parent?.type !== 'pair') return;
-    if (node?.parent?.parent?.type !== 'dictionary') return;
+    if (node.type !== 'string') return false;
+    if (node?.parent?.type !== 'pair') return false;
+    if (node?.parent?.parent?.type !== 'dictionary') return false;
 
     const pair = node.parent;
-    if (pair.child(0)?.id !== node.id) return;
+    if (pair.child(0)?.id !== node.id) return false;
+    return true;
+  }
+
+  #tryKeyName(node: Parser.SyntaxNode, builder: SemanticTokensBuilder): boolean {
+    if (!this.#isBuiltInKey) return false;
 
     // The filtered node is the key name.
-    const keyName = node.text.substr(1, node.text.length - 2);
-    if (GYP_SECTION.includes(keyName)) {
-      builder.push(
-        node.startPosition.row,
-        node.startPosition.column,
-        node.text.length,
-        GYPSupport.tokenTypes.get('type') as number,
-        GYPSupport.encodeModifiers('defaultLibrary'));
-    } else if (GYP_TARGET_SECTION.includes(keyName)) {
-      builder.push(
-        node.startPosition.row,
-        node.startPosition.column,
-        node.text.length,
-        GYPSupport.tokenTypes.get('type') as number,
-        GYPSupport.encodeModifiers('defaultLibrary'));
+    const color = GYPSupport.tryColorKeyName(node);
+    if (!color) return false;
+
+    builder.push(
+      node.startPosition.row,
+      node.startPosition.column,
+      node.text.length,
+      GYPSupport.tokenTypes.get(color[0]) as number,
+      GYPSupport.encodeModifiers(color[1]));
+
+    return true;
+  }
+
+  #tryStoreTargetName(document: TextDocument, node: Parser.SyntaxNode): boolean {
+    if (node.type !== 'string') return false;
+    if (node?.parent?.type !== 'pair') return false;
+    if (node?.parent?.parent?.type !== 'dictionary') return false;
+
+    const pair = node.parent;
+    if (pair.child(2)?.id !== node.id) return false;
+    const key = pair.child(0);
+    if (key?.type !== 'string') return false;
+    if (key.text.substring(1, key.text.length - 1) !== 'target_name') return false;
+
+    const map = this.#targets.get(document);
+    if (!map) return false;
+    map.set(
+      node.text.substring(1, node.text.length - 1),
+      new Location(document.uri, new Position(key.startPosition.row, key.startPosition.column)));
+
+    return true;
+  }
+
+  #tryGetTargetDefinitionViaNode(document: TextDocument, node: Parser.SyntaxNode): Location | null {
+    const map = this.#targets.get(document);
+    if (!map) return null;
+
+    if (node.type !== 'string') return null;
+    if (node?.parent?.type !== 'list') return null;
+    if (node.parent.parent?.type !== 'pair') return null;
+    const checkKey = node.parent.parent.child(0)?.text;
+    if (!checkKey) return null;
+    if (checkKey.substring(1, checkKey.length - 1) !== 'dependencies') return null;
+
+    const targetName = node.text.substring(1, node.text.length - 1);
+    return map.get(targetName) || null;
+  }
+
+  #walk(document: TextDocument, node: Parser.SyntaxNode, depth: number, builder: SemanticTokensBuilder) {
+    let processed = false;
+    if (!processed) processed = this.#tryKeyName(node, builder);
+    if (!processed) processed = this.#tryStoreTargetName(document, node);
+
+    for (const child of node.children) {
+      this.#walk(document, child, depth + 1, builder);
     }
   }
 
-  #walk(node: Parser.SyntaxNode, depth: number, builder: SemanticTokensBuilder) {
-    // console.log(`${' '.repeat(depth)}${node.type}`);
-    this.#tryKeyName(node, builder);
+  async provideDefinition(
+    document: TextDocument,
+    position: Position,
+  ): Promise<Definition | LocationLink[]> {
+    const tree = this.#trees.get(document);
+    if (!tree) return null as any;
 
-    for (const child of node.children) {
-      this.#walk(child, depth + 1, builder);
-    }
+    const node = tree.rootNode.descendantForPosition({
+      row: position.line,
+      column: position.character,
+    });
+    if (!node) return null as any;
+
+    this.channel.appendLine(`provideDefinition: ${document.uri}, position: ${position.line}:${position.character}`);
+    const definition = this.#tryGetTargetDefinitionViaNode(document, node);
+    if (!definition) return null as any;
+
+    return definition;
   }
 
   /**
@@ -216,20 +311,48 @@ class GYPSupport extends Base implements DocumentSemanticTokensProvider {
 
     const builder = new SemanticTokensBuilder(GYPSupport.legend);
     const oldTree: Parser.Tree | undefined = this.#trees.get(document);
-    console.log(new Date(), 'onProvideDocumentSemanticTokens:', !!oldTree, document.uri.fsPath);
-    const tree = this.#parser.parse(document.getText(), oldTree);
+    this.channel.appendLine(`onProvideDocumentSemanticTokens: ${!!oldTree}, ${document.uri.fsPath}`);
+    const tree = this.#parser.parse(document.getText() /* , oldTree */);
     this.#trees.set(document, tree);
-    this.#walk(tree.rootNode, 0, builder);
+    this.#targets.set(document, new Map());
+    this.#walk(document, tree.rootNode, 0, builder);
     const ret = builder.build();
 
-    // `ms-vscode.python` will make this `provideDocumentSemanticTokens()` lose
-    // effectiveness. So I make a delay to make it effective.
-    //
-    // What I guess:
-    //   1. `provideDocumentSemanticTokens()`;
-    //   2. `ms-vscode.python` overwrites something (I don't know what it is);
-    //   3. boom!
     return ret;
+  }
+
+  async provideHover(
+    document: TextDocument,
+    pos: Position,
+  ): Promise<Hover> {
+    const tree = this.#trees.get(document);
+    if (!tree) return null as any;
+
+    const node = tree.rootNode.descendantForPosition({
+      row: pos.line,
+      column: pos.character,
+    });
+    if (!node) return null as any;
+
+    if (!this.#isBuiltInKey(node)) return null as any;
+
+    this.channel.appendLine(`onProvideHover: ${document.uri.fsPath}, position: ${pos.line}:${pos.character}`);
+    const type = GYPSupport.tryGetKeyNameType(node);
+    if (!type) return null as any;
+
+    const keyName = node.text.substring(1, node.text.length - 1);
+    const idx = (CONSTANTS[type] as string[]).indexOf(keyName);
+    const docs = CONSTANTS[`${type}_DOCUMENTATION`] as string[];
+    let doc = docs[idx];
+    if (!doc) return null as any;
+
+    const links: { [key: string]: string } = CONSTANTS.links as any;
+    const blocks: { [key: string]: string } = CONSTANTS.blocks as any;
+    if (links[keyName]) {
+      doc += `\n\n---\n${blocks[keyName]}\n---\nReference: ${links[keyName]}`;
+    }
+
+    return new Hover(doc);
   }
 }
 
@@ -249,4 +372,10 @@ export async function activate(context: ExtensionContext) {
       GYPSupport.documentSelector,
       gyp,
       GYPSupport.legend));
+
+  context.subscriptions.push(
+    languages.registerHoverProvider({ language: 'gyp' }, gyp));
+
+  context.subscriptions.push(
+    languages.registerDefinitionProvider({ language: 'gyp' }, gyp));
 }
