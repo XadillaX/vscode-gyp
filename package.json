@@ -1,6 +1,6 @@
 {
   "name": "gyp",
-  "displayName": "GYP Support",
+  "displayName": "GYP",
   "version": "1.0.0",
   "engines": {
     "vscode": "^1.20.0"
@@ -8,25 +8,33 @@
   "categories": [
     "Programming Languages"
   ],
+  "keywords": [
+    "GYP",
+    "Chromium GYP",
+    "Generate Your Projects",
+    "node-gyp"
+  ],
+  "icon": "./assets/logo.png",
   "description": "GYP support for VSCode.",
   "scripts": {
-    "compile": "tsc -p ./",
     "build-wasm": "tree-sitter build-wasm ./node_modules/tree-sitter-legesher-python",
-    "postinstall": "rm -f package-lock.json && npm run build-wasm"
+    "compile": "tsc -p ./",
+    "postinstall": "rm -f package-lock.json && npm run build-wasm && npm run update-grammar",
+    "update-grammar": "make update-grammar"
   },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/XadillaX/vscode-gyp.git"
   },
   "author": "XadillaX <i@2333.moe>",
-  "publisher": "XadillaX",
+  "publisher": "Xadillax",
   "license": "MIT",
   "bugs": {
     "url": "https://github.com/XadillaX/vscode-gyp/issues"
   },
   "homepage": "https://github.com/XadillaX/vscode-gyp#readme",
   "activationEvents": [
-    "onLanguage:python"
+    "onLanguage:gyp"
   ],
   "main": "./out/extension.js",
   "devDependencies": {
@@ -34,17 +42,43 @@
     "@types/vscode": "^1.65.0",
     "eslint": "^8.11.0",
     "eslint-config-egg": "^11.0.1",
+    "spidex": "^2.2.1",
     "tree-sitter-cli": "^0.20.0",
     "tree-sitter-legesher-python": "^0.19.3",
-    "typescript": "^4.6.2"
+    "typescript": "^4.6.2",
+    "vscode-update-grammar-tool": "^1.0.0"
   },
   "dependencies": {
     "sdk-base": "^3.6.0",
     "web-tree-sitter": "^0.20.0"
   },
   "contributes": {
+    "languages": [
+      {
+        "id": "gyp",
+        "extensions": [
+          ".gyp",
+          ".gypi"
+        ],
+        "aliases": [
+          "GYP"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "gyp",
+        "scopeName": "source.python",
+        "path": "./syntaxes/MagicPython.tmLanguage.json"
+      },
+      {
+        "scopeName": "source.regexp.python",
+        "path": "./syntaxes/MagicRegExp.tmLanguage.json"
+      }
+    ],
     "configurationDefaults": {
-      "[python]": {
+      "[gyp]": {
         "editor.semanticHighlighting.enabled": true
       }
     }
