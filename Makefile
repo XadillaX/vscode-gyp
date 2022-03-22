@@ -10,4 +10,5 @@ pack:
 	npm install
 	npm run compile
 	rm -rf node_modules
-	npm install --prod
+	npm install --prod --ignore-scripts
+	rm -f package-lock.json

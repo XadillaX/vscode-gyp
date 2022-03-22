@@ -14,20 +14,21 @@
     "Generate Your Projects",
     "node-gyp"
   ],
-  "icon": "./assets/logo.png",
+  "icon": "assets/logo.png",
   "description": "GYP support for VSCode.",
   "scripts": {
     "build-wasm": "tree-sitter build-wasm ./node_modules/tree-sitter-legesher-python",
     "compile": "tsc -p ./",
     "postinstall": "rm -f package-lock.json && npm run build-wasm && npm run update-grammar",
-    "update-grammar": "make update-grammar"
+    "update-grammar": "make update-grammar",
+    "vscode:prepublish": "make pack"
   },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/XadillaX/vscode-gyp.git"
   },
   "author": "XadillaX <i@2333.moe>",
-  "publisher": "Xadillax",
+  "publisher": "XadillaX",
   "license": "MIT",
   "bugs": {
     "url": "https://github.com/XadillaX/vscode-gyp/issues"
@@ -39,7 +40,7 @@
   "main": "./out/extension.js",
   "devDependencies": {
     "@types/node": "^17.0.21",
-    "@types/vscode": "^1.65.0",
+    "@types/vscode": "^1.20.0",
     "eslint": "^8.11.0",
     "eslint-config-egg": "^11.0.1",
     "spidex": "^2.2.1",

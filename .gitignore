@@ -106,3 +106,4 @@ dist
 *.wasm
 out
 package-lock.json
+*.vsix
